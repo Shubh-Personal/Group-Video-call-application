@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom';
 import { io } from "socket.io-client";
 
@@ -6,20 +6,22 @@ const VideoRoom = () => {
 
     let roomName = localStorage.getItem('room');
     const socket = io("localhost:5000");
-
+    const [tempObj, setTempObj] = useState<RTCPeerConnection>();
     const [videoCallUsersInRoom, setVideoCallUsersInRoom] = useState<any>([])
     const [localStream, setLocalStream] = useState<MediaStream>()
-    const [remoteStream, setRemoteStream] = useState<any>()
-    const [peerConnections, setPeerConnections] = useState<any>([])
-
+    const [remoteStream, setRemoteStream] = useState<any>({})
+    const [peerConnections, setPeerConnections] = useState<any>({})
+    let tempPeerConnections: { [key: string]: any } = {}
+    let localSt: MediaStream;
     const navigate = useNavigate();
-
+    const videoRef = useRef<any>()
     const getLocalStream = async () => {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({
                 video: true,
                 audio: true
             });
+            localSt = stream
             setLocalStream(stream);
         } catch (error) {
             console.error(error);
@@ -41,31 +43,41 @@ const VideoRoom = () => {
         setVideoCallUsersInRoom([...videoCallUsersInRoom, data])
     }
 
-    const addNewPeerConnection = async (data: any, sendTo: any) => {
-        let newData = { data, sendTo };
-        setPeerConnections([...peerConnections, newData])
-        console.log("Set new PC", peerConnections);
+    const addNewPeerConnection = async (data: any, sendTo: string) => {
+        console.log("New peer Connection is set");
+
+        peerConnections[sendTo] = data;
+        setPeerConnections(peerConnections)
     }
 
-    const initNewPeer = (data: any) => {
-        let peerConnectionObj = new RTCPeerConnection()
+    const initNewPeer = (data: string) => {
+        let peerConnectionObj = new RTCPeerConnection({
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' }
+            ],
+        })
 
-        localStream?.getTracks().forEach(track => {
-            peerConnectionObj.addTrack(track, localStream)
+        localSt?.getTracks().forEach(track => {
+            peerConnectionObj.addTrack(track, localSt)
         });
 
-        peerConnectionObj.onicecandidate = () => {
-
+        peerConnectionObj.onicecandidate = (event) => {
+            if (event.candidate) {
+                socket.emit('ice-candidate', { from: socket.id, to: data, candidate: event.candidate });
+            }
         }
 
         peerConnectionObj.ontrack = (e) => {
-            setRemoteStream({ ...remoteStream, data: e.streams[0] })
+            videoRef.current.srcObject = e.streams[0]
+            console.log(videoRef.current.autoplay);
+
+            let newStream: { [key: string]: any } = {}
+            newStream[data] = e.streams[0]
+            setRemoteStream({ ...remoteStream, newStream })
         }
-
         return peerConnectionObj;
-
-
     }
+
     const requestConnectionToNewUser = async (data: any) => {
         sendMessage("connect-to-me", { to: data, sender: socket.id })
 
@@ -73,13 +85,15 @@ const VideoRoom = () => {
 
         let offer = await peerConnectionObj.createOffer()
         await peerConnectionObj.setLocalDescription(offer)
+
         await addNewPeerConnection(peerConnectionObj, data)
-        await sendMessage('offer', { offer, to: data, from: socket.id });
+        sendMessage('offer', { offer, to: data, from: socket.id });
 
     }
 
     const initPeerConnectionResponse = async ({ offer, from }: any) => {
         let peerConnectionObj = initNewPeer(from)
+        setTempObj(peerConnectionObj);
         await peerConnectionObj.setRemoteDescription(offer)
         let answer = await peerConnectionObj.createAnswer()
         await peerConnectionObj.setLocalDescription(answer)
@@ -112,19 +126,27 @@ const VideoRoom = () => {
             initPeerConnectionResponse(data)
         })
 
-        socket.on('answer-request', (data) => {
+        socket.on('answer-request', async (data) => {
             console.log(peerConnections);
-            console.log(data.from, socket.id);
-
-            // await peerConnection[0].data.setRemoteDescription(data.answer)
+            await peerConnections[data.from].setRemoteDescription(data.answer);
         })
 
+        socket.on('ice-candidate', ({ to, candidate, from }) => {
+            try {
+                const pc = peerConnections[from] || peerConnections[to];
+                console.log(pc);
+                pc.addIceCandidate(new RTCIceCandidate(candidate));
+            } catch (error) {
+                console.error('Error adding ICE candidate:', error);
+            }
+        });
         return () => {
             socket.off('connect')
             socket.off('user-connected')
             socket.off('connect-request')
             socket.off('offer-request')
             socket.off('answer-request')
+            socket.off('ice-candidate')
             stopLocalStream()
         }
     }, []);
@@ -132,6 +154,7 @@ const VideoRoom = () => {
     return (
         <>
             <div>Room Name - {roomName}</div> {socket.id}
+            <video ref={videoRef} style={{ border: "2px solid black" }} autoPlay={true} muted={true} height="500" width={500}></video>
             {
                 videoCallUsersInRoom.map((user: any, i: any) =>
                     <div className='d-block-inline' key={i}>

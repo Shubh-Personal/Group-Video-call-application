@@ -31,9 +31,13 @@ io.on('connection', (socket) => {
         socket.to(to).emit('offer-request', { offer, from })
     })
 
-    socket.on('answer', ({ to, offer, from }) => {
-        socket.to(to).emit('answer-request', { offer, from })
+    socket.on('answer', ({ to, answer, from }) => {
+        socket.to(to).emit('answer-request', { answer, from })
     })
+
+    socket.on('ice-candidate', ({ to, candidate, from }) => {
+        socket.to(to).emit('ice-candidate', { from, to, candidate })
+    });
 
     socket.on('disconnecting', () => {
         console.log("socket disconnecting....");
